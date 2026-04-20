@@ -91,7 +91,8 @@ Each class is implemented as a pair of `.c` / `.h` files (and a `.stub.php` for 
 - `src/libmongoc` – mongo-c-driver (includes libbson)
 - `src/libmongocrypt` – client-side encryption library
 
-Build configurations (`config.m4` for Autotools, `config.w32` for Windows) enumerate all bundled source files. When updating a submodule, run `scripts/update-submodule-sources.php` to regenerate these lists and update version checks in both files.
+Build configurations (`config.m4` for Autotools, `config.w32` for Windows) enumerate all bundled source files.
+Use the `/update-submodule` command when updating a submodule.
 
 ### Test Format (PHPT)
 
