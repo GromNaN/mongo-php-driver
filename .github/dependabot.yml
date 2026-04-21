@@ -10,3 +10,5 @@ updates:
       interval: "weekly"
     allow:
       - dependency-name: "tests/drivers-evergreen-tools"
+      - dependency-name: "src/libmongoc"
+      - dependency-name: "src/libmongocrypt"

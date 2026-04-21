@@ -1,0 +1,98 @@
+name: "Update Submodule"
+
+# Triggered when Dependabot opens or updates a PR for src/libmongoc or src/libmongocrypt.
+# Runs the additional steps that Dependabot cannot handle:
+# - Regenerate C source lists in config.m4 and config.w32
+# - Update minimum version requirements
+# - Update the SBOM
+on:
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+    paths:
+      - "src/libmongoc"
+      - "src/libmongocrypt"
+
+jobs:
+  update-submodule:
+    name: "Update submodule files"
+    runs-on: "ubuntu-latest"
+    # Only run for Dependabot PRs on the main repo (not forks)
+    if: |
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: write
+
+    steps:
+      - name: "Checkout PR branch"
+        uses: "actions/checkout@v6"
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          submodules: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Configure git"
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: "Detect updated submodule"
+        id: detect
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          CHANGED=$(git diff "${BASE_SHA}..HEAD" --name-only)
+          if echo "$CHANGED" | grep -q "^src/libmongoc$"; then
+            VERSION=$(cat src/libmongoc/VERSION_CURRENT | tr -d '[:space:]')
+            echo "library=libmongoc" >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          elif echo "$CHANGED" | grep -q "^src/libmongocrypt$"; then
+            git -C src/libmongocrypt fetch --tags
+            VERSION=$(git -C src/libmongocrypt describe --tags --exact-match HEAD | tr -d '[:space:]')
+            echo "library=libmongocrypt" >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "library=" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "Regenerate source lists"
+        if: steps.detect.outputs.library != ''
+        run: php scripts/update-submodule-sources.php
+
+      - name: "Update version references (libmongoc)"
+        if: steps.detect.outputs.library == 'libmongoc'
+        run: |
+          VERSION="${{ steps.detect.outputs.version }}"
+          sed -i "s|PHP_MONGODB_MIN_LIBBSON_VERSION=.*|PHP_MONGODB_MIN_LIBBSON_VERSION=\"${VERSION}\"|" config.m4
+          sed -i "s|PHP_MONGODB_MIN_LIBMONGOC_VERSION=.*|PHP_MONGODB_MIN_LIBMONGOC_VERSION=\"${VERSION}\"|" config.m4
+          sed -i "s|LIBMONGOC_VERSION: .*|LIBMONGOC_VERSION: \"${VERSION}\"|" .github/workflows/tests.yml
+
+      - name: "Update version references (libmongocrypt)"
+        if: steps.detect.outputs.library == 'libmongocrypt'
+        run: |
+          VERSION="${{ steps.detect.outputs.version }}"
+          sed -i "s|PHP_MONGODB_MIN_LIBMONGOCRYPT_VERSION=.*|PHP_MONGODB_MIN_LIBMONGOCRYPT_VERSION=\"${VERSION}\"|" config.m4
+          sed -i "s|LIBMONGOCRYPT_VERSION: .*|LIBMONGOCRYPT_VERSION: \"${VERSION}\"|" .github/workflows/tests.yml
+          printf '%s\n' "${VERSION}" > src/LIBMONGOCRYPT_VERSION_CURRENT
+
+      - name: "Update SBOM"
+        if: steps.detect.outputs.library != ''
+        run: bash scripts/update-sbom.sh
+
+      - name: "Commit changes"
+        if: steps.detect.outputs.library != ''
+        run: |
+          LIBRARY="${{ steps.detect.outputs.library }}"
+          VERSION="${{ steps.detect.outputs.version }}"
+          git add config.m4 config.w32 .github/workflows/tests.yml sbom.json
+          if [ "$LIBRARY" = "libmongocrypt" ]; then
+            git add src/LIBMONGOCRYPT_VERSION_CURRENT
+          fi
+          # Only commit if there are staged changes
+          if ! git diff --cached --quiet; then
+            git commit -m "Upgrade ${LIBRARY} to ${VERSION}: update source lists, version requirements, and SBOM"
+            git push origin ${{ github.event.pull_request.head.ref }}
+          fi
